@@ -273,11 +273,11 @@ impl HealthBuilder {
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Check>> + Send + 'static,
     {
-        let name = name.into();
+        let name = validate_name(name);
         let check = Arc::new(move || Box::pin(check()) as CheckFuture);
         for kind in kinds {
             self.checks.push(RegisteredCheck {
-                name: Arc::from(name.as_str()),
+                name: name.clone(),
                 kind,
                 check: check.clone(),
             });
@@ -299,12 +299,18 @@ impl HealthBuilder {
     {
         let check = Arc::new(move || Box::pin(check()) as CheckFuture);
         self.checks.push(RegisteredCheck {
-            name: Arc::from(name.into()),
+            name: validate_name(name),
             kind,
             check,
         });
         self
     }
+}
+
+fn validate_name(name: impl Into<String>) -> Arc<str> {
+    let name = name.into();
+    assert!(!name.is_empty(), "health check names must not be empty");
+    Arc::from(name)
 }
 
 async fn run_check(registered: &RegisteredCheck) -> CheckResponse {
@@ -498,6 +504,14 @@ mod tests {
                 ]
             })
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "health check names must not be empty")]
+    fn direct_registration_rejects_empty_names() {
+        let _health = Health::builder()
+            .liveness("", || async { Ok(Check::up()) })
+            .build();
     }
 
     #[test]
