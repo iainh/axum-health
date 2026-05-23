@@ -44,16 +44,16 @@ pub use axum_health_macros::health_check;
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use futures_util::future::join_all;
-use http::StatusCode;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::error::Error as StdError;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::Poll;
 
 /// Error type returned by health check closures.
 pub type Error = Box<dyn StdError + Send + Sync>;
@@ -189,13 +189,11 @@ impl Health {
     }
 
     async fn run(&self, kind: Option<Kind>) -> HealthPayload {
-        let checks = join_all(self.checks.iter().filter_map(|registered| {
-            if kind.is_none_or(|kind| registered.kind == kind) {
-                Some(run_check(registered))
-            } else {
-                None
-            }
-        }))
+        let checks = run_checks_concurrently(
+            self.checks
+                .iter()
+                .filter(|registered| kind.is_none_or(|kind| registered.kind == kind)),
+        )
         .await;
 
         let status = if checks.iter().all(|check| check.status == Status::Up) {
@@ -313,15 +311,68 @@ fn validate_name(name: impl Into<String>) -> Arc<str> {
     Arc::from(name)
 }
 
-async fn run_check(registered: &RegisteredCheck) -> CheckResponse {
-    match (registered.check)().await {
+struct PendingCheck {
+    name: Arc<str>,
+    future: Option<CheckFuture>,
+    response: Option<CheckResponse>,
+}
+
+async fn run_checks_concurrently<'a>(
+    checks: impl IntoIterator<Item = &'a RegisteredCheck>,
+) -> Vec<CheckResponse> {
+    let mut pending = checks
+        .into_iter()
+        .map(|registered| PendingCheck {
+            name: registered.name.clone(),
+            future: Some((registered.check)()),
+            response: None,
+        })
+        .collect::<Vec<_>>();
+
+    std::future::poll_fn(|cx| {
+        let mut all_ready = true;
+
+        for check in &mut pending {
+            let Some(future) = &mut check.future else {
+                continue;
+            };
+
+            match future.as_mut().poll(cx) {
+                Poll::Ready(result) => {
+                    check.response = Some(check_response(check.name.clone(), result));
+                    check.future = None;
+                }
+                Poll::Pending => all_ready = false,
+            }
+        }
+
+        if all_ready {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+
+    pending
+        .into_iter()
+        .map(|check| {
+            check.response.unwrap_or_else(|| {
+                check_response(check.name, Err("health check did not complete".into()))
+            })
+        })
+        .collect()
+}
+
+fn check_response(name: Arc<str>, result: Result<Check>) -> CheckResponse {
+    match result {
         Ok(check) => CheckResponse {
-            name: registered.name.to_string(),
+            name: name.to_string(),
             status: check.status,
             data: check.data,
         },
         Err(error) => CheckResponse {
-            name: registered.name.to_string(),
+            name: name.to_string(),
             status: Status::Down,
             data: Map::from_iter([("error".to_owned(), Value::String(error.to_string()))]),
         },
@@ -366,7 +417,7 @@ struct CheckResponse {
 mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
-    use http::Request;
+    use axum::http::Request;
     use serde::Serialize;
     use serde::ser::{SerializeStruct, Serializer};
     use serde_json::json;

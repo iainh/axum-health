@@ -1,6 +1,6 @@
 use axum::body::{Body, to_bytes};
+use axum::http::{Request, StatusCode};
 use axum_health::{Check, Health, Result, health_check};
-use http::{Request, StatusCode};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tower::ServiceExt;
