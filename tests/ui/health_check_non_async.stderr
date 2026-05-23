@@ -1,0 +1,5 @@
+error: health check methods must be async
+ --> tests/ui/health_check_non_async.rs:8:8
+  |
+8 |     fn live(&self) -> Result<Check> {
+  |        ^^^^
