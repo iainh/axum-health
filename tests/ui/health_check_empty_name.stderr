@@ -1,0 +1,5 @@
+error: health check names must not be empty
+ --> tests/ui/health_check_empty_name.rs:7:22
+  |
+7 |     #[startup(name = "")]
+  |                      ^^
