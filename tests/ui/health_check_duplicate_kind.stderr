@@ -1,0 +1,5 @@
+error: duplicate health check kind
+ --> tests/ui/health_check_duplicate_kind.rs:7:35
+  |
+7 |     #[health(liveness, readiness, liveness)]
+  |                                   ^^^^^^^^
