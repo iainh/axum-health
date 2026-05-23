@@ -2,7 +2,8 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
-    Attribute, FnArg, ImplItem, ImplItemFn, ItemImpl, LitStr, Meta, ReturnType, parse_macro_input,
+    Attribute, FnArg, GenericArgument, ImplItem, ImplItemFn, ItemImpl, LitStr, Meta, PathArguments,
+    ReturnType, Type, parse_macro_input,
 };
 
 /// Implements `HealthCheck` and generates `into_health` for an impl block.
@@ -24,6 +25,7 @@ fn expand_health_check(impl_item: &mut ItemImpl) -> TokenStream2 {
     let (impl_generics, _ty_generics, where_clause) = generics.split_for_impl();
     let mut errors = Vec::new();
     let mut registrations = Vec::new();
+    let mut has_annotated_check = false;
 
     if impl_item.trait_.is_some() {
         errors.push(
@@ -42,30 +44,33 @@ fn expand_health_check(impl_item: &mut ItemImpl) -> TokenStream2 {
 
         match take_check_attrs(&mut method.attrs) {
             Ok(checks) if checks.is_empty() => {}
-            Ok(checks) => match validate_method(method) {
-                Ok(()) => {
-                    let method_ident = method.sig.ident.clone();
-                    for check in checks {
-                        let name = check.name.unwrap_or_else(|| method_ident.to_string());
-                        let kind = check.kind.tokens(&axum_health);
-                        registrations.push(quote! {
-                            builder = builder.check_for([#kind], #name, {
-                                let checks = ::std::sync::Arc::clone(&checks);
-                                move || {
+            Ok(checks) => {
+                has_annotated_check = true;
+                match validate_method(method) {
+                    Ok(()) => {
+                        let method_ident = method.sig.ident.clone();
+                        for check in checks {
+                            let name = check.name.unwrap_or_else(|| method_ident.to_string());
+                            let kind = check.kind.tokens(&axum_health);
+                            registrations.push(quote! {
+                                builder = builder.check_for([#kind], #name, {
                                     let checks = ::std::sync::Arc::clone(&checks);
-                                    async move { checks.#method_ident().await }
-                                }
+                                    move || {
+                                        let checks = ::std::sync::Arc::clone(&checks);
+                                        async move { checks.#method_ident().await }
+                                    }
+                                });
                             });
-                        });
+                        }
                     }
+                    Err(error) => errors.push(error.to_compile_error()),
                 }
-                Err(error) => errors.push(error.to_compile_error()),
-            },
+            }
             Err(error) => errors.push(error.to_compile_error()),
         }
     }
 
-    if registrations.is_empty() {
+    if !has_annotated_check {
         errors.push(
             syn::Error::new_spanned(
                 &impl_item.self_ty,
@@ -162,14 +167,52 @@ fn validate_method(method: &ImplItemFn) -> syn::Result<()> {
         ));
     }
 
-    if matches!(method.sig.output, ReturnType::Default) {
-        return Err(syn::Error::new_spanned(
-            &method.sig.ident,
-            "health check methods must return axum_health::Result<axum_health::Check>",
-        ));
+    match &method.sig.output {
+        ReturnType::Type(_, ty) if is_health_check_result(ty) => {}
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &method.sig.output,
+                "health check methods must return axum_health::Result<axum_health::Check>",
+            ));
+        }
     }
 
     Ok(())
+}
+
+fn is_health_check_result(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+
+    let Some(result_segment) = type_path.path.segments.last() else {
+        return false;
+    };
+    if result_segment.ident != "Result" {
+        return false;
+    }
+
+    let PathArguments::AngleBracketed(args) = &result_segment.arguments else {
+        return false;
+    };
+
+    let Some(GenericArgument::Type(ok_type)) = args.args.first() else {
+        return false;
+    };
+
+    is_check_type(ok_type)
+}
+
+fn is_check_type(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+
+    type_path
+        .path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "Check")
 }
 
 fn take_check_attrs(attrs: &mut Vec<Attribute>) -> syn::Result<Vec<CheckAttr>> {

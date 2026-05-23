@@ -1,0 +1,5 @@
+error: health check methods must return axum_health::Result<axum_health::Check>
+ --> tests/ui/health_check_wrong_return.rs:8:26
+  |
+8 |     async fn live(&self) -> Check {
+  |                          ^^^^^^^^

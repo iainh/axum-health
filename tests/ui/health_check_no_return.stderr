@@ -1,0 +1,7 @@
+error: health check methods must return axum_health::Result<axum_health::Check>
+ --> tests/ui/health_check_no_return.rs:5:1
+  |
+5 | #[health_check]
+  | ^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `health_check` (in Nightly builds, run with -Z macro-backtrace for more info)
