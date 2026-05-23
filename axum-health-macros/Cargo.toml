@@ -2,8 +2,13 @@
 name = "axum-health-macros"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 description = "Procedural macros for axum-health."
 license = "MIT OR Apache-2.0"
+readme = "../README.md"
+documentation = "https://docs.rs/axum-health-macros"
+keywords = ["axum", "health", "microprofile", "proc-macro"]
+categories = ["development-tools::procedural-macro-helpers", "web-programming"]
 
 [lib]
 proc-macro = true

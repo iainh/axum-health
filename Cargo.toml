@@ -6,11 +6,16 @@ resolver = "2"
 name = "axum-health"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 description = "MicroProfile-inspired health endpoints for Axum."
 license = "MIT OR Apache-2.0"
+readme = "README.md"
+documentation = "https://docs.rs/axum-health"
+keywords = ["axum", "health", "microprofile", "kubernetes"]
+categories = ["web-programming"]
 
 [dependencies]
-axum-health-macros = { path = "axum-health-macros" }
+axum-health-macros = { version = "0.1.0", path = "axum-health-macros" }
 axum = "0.8"
 futures-util = "0.3"
 http = "1"
