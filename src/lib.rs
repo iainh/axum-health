@@ -46,6 +46,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use futures_util::future::join_all;
 use http::StatusCode;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -178,15 +179,14 @@ impl Health {
     }
 
     async fn run(&self, kind: Option<Kind>) -> HealthPayload {
-        let mut checks = Vec::new();
-
-        for registered in self.checks.iter() {
-            if kind.is_some_and(|kind| registered.kind != kind) {
-                continue;
+        let checks = join_all(self.checks.iter().filter_map(|registered| {
+            if kind.is_none_or(|kind| registered.kind == kind) {
+                Some(run_check(registered))
+            } else {
+                None
             }
-
-            checks.push(run_check(registered).await);
-        }
+        }))
+        .await;
 
         let status = if checks.iter().all(|check| check.status == Status::Up) {
             Status::Up
@@ -352,6 +352,9 @@ mod tests {
     use axum::body::{Body, to_bytes};
     use http::Request;
     use serde_json::json;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -483,6 +486,58 @@ mod tests {
                 ]
             })
         );
+    }
+
+    #[tokio::test]
+    async fn selected_checks_run_concurrently() {
+        let running = Arc::new(AtomicUsize::new(0));
+        let max_running = Arc::new(AtomicUsize::new(0));
+
+        let response = Health::builder()
+            .readiness(
+                "first",
+                concurrent_check(running.clone(), max_running.clone()),
+            )
+            .readiness(
+                "second",
+                concurrent_check(running.clone(), max_running.clone()),
+            )
+            .build()
+            .router()
+            .oneshot(request("/health/ready"))
+            .await
+            .expect("health route should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(response).await,
+            json!({
+                "status": "UP",
+                "checks": [
+                    {"name": "first", "status": "UP"},
+                    {"name": "second", "status": "UP"}
+                ]
+            })
+        );
+        assert_eq!(max_running.load(Ordering::SeqCst), 2);
+    }
+
+    fn concurrent_check(
+        running: Arc<AtomicUsize>,
+        max_running: Arc<AtomicUsize>,
+    ) -> impl Fn() -> Pin<Box<dyn Future<Output = Result<Check>> + Send>> + Send + Sync + 'static
+    {
+        move || {
+            let running = running.clone();
+            let max_running = max_running.clone();
+            Box::pin(async move {
+                let current = running.fetch_add(1, Ordering::SeqCst) + 1;
+                max_running.fetch_max(current, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                running.fetch_sub(1, Ordering::SeqCst);
+                Ok(Check::up())
+            })
+        }
     }
 
     fn request(uri: &str) -> Request<Body> {
