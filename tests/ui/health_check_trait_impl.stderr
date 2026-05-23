@@ -1,0 +1,5 @@
+error: #[health_check] must be used on an inherent impl block
+  --> tests/ui/health_check_trait_impl.rs:10:16
+   |
+10 | impl Probe for TraitImpl {
+   |                ^^^^^^^^^
