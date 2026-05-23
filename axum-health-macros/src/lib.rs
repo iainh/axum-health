@@ -9,9 +9,43 @@ use syn::{
 /// Implements `HealthCheck` and generates `into_health` for an impl block.
 ///
 /// Supported method attributes are `#[liveness]`, `#[readiness]`,
-/// `#[startup]`, and `#[health(...)]`. Each annotated method must be async,
-/// take `&self`, take no other arguments, and return an
-/// `axum_health::Result<axum_health::Check>`.
+/// `#[startup]`, and `#[health(...)]`.
+///
+/// Use the specific attributes when a method belongs to one health kind:
+///
+/// ```ignore
+/// use axum_health::{Check, Result, health_check};
+///
+/// struct DatabaseHealth {
+///     pool: DatabasePool,
+/// }
+///
+/// #[health_check]
+/// impl DatabaseHealth {
+///     #[readiness(name = "database")]
+///     async fn ready(&self) -> Result<Check> {
+///         self.pool.acquire().await?;
+///         Ok(Check::up())
+///     }
+/// }
+/// ```
+///
+/// Use `#[health(...)]` when the same method should be registered for multiple
+/// health kinds:
+///
+/// ```ignore
+/// #[health_check]
+/// impl DirectoryHealth {
+///     #[health(liveness, readiness, name = "ldap-directory")]
+///     async fn bind_probe(&self) -> axum_health::Result<axum_health::Check> {
+///         self.client.bind_probe().await?;
+///         Ok(axum_health::Check::up())
+///     }
+/// }
+/// ```
+///
+/// Each annotated method must be async, take `&self`, take no other arguments,
+/// and return `axum_health::Result<axum_health::Check>`.
 #[proc_macro_attribute]
 pub fn health_check(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut impl_item = parse_macro_input!(item as ItemImpl);

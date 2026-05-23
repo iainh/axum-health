@@ -1,17 +1,25 @@
 # axum-health
 
-`axum-health` is a Rust/Axum reimagining of Eclipse MicroProfile Health. It
-keeps the protocol-level ideas: named health checks, `UP`/`DOWN` statuses, JSON
-payloads, and the standard health endpoints:
+`axum-health` provides Kubernetes-friendly health endpoints for Axum using the
+protocol shape from Eclipse MicroProfile Health. It keeps the wire format small
+and predictable: named checks, `UP`/`DOWN` statuses, JSON responses, and HTTP
+200 or 503 status codes.
 
-- `GET /health`
-- `GET /health/live`
-- `GET /health/ready`
-- `GET /health/started`
+## High-level features
 
-The Rust API is explicit instead of annotation-based. Checks are async closures
-registered with a small builder, and the result is an Axum `Router` that can be
-merged into an application.
+- Register liveness, readiness and startup checks with async closures.
+- Expose the standard health endpoints:
+
+  - `GET /health`
+  - `GET /health/live`
+  - `GET /health/ready`
+  - `GET /health/started`
+
+- Compose backend-specific health providers with `#[health_check]`.
+- Attach small diagnostic values to individual check responses.
+- Convert check errors into named `DOWN` responses.
+
+## Example
 
 ```rust
 use axum::Router;
@@ -27,6 +35,8 @@ let health = Health::builder()
 
 let app: Router = Router::new().merge(health.router());
 ```
+
+## Composing backend health checks
 
 When checks naturally belong to backend-specific types, use `#[health_check]`
 on each inherent `impl` block and compose them with `include`:
@@ -80,7 +90,20 @@ let health = Health::builder()
     .build();
 ```
 
-## Design
+## Endpoint behaviour
+
+`Health::router` returns an Axum `Router` with four `GET` routes:
+
+- `/health` runs all registered checks.
+- `/health/live` runs liveness checks.
+- `/health/ready` runs readiness checks.
+- `/health/started` runs startup checks.
+
+The aggregate status is `UP` only when every selected check is `UP`. A healthy
+response uses HTTP 200. If any selected check is `DOWN`, the endpoint returns
+HTTP 503.
+
+## MicroProfile mapping
 
 MicroProfile Health describes Java `HealthCheck` implementations annotated with
 `@Liveness`, `@Readiness`, or `@Startup`. In this crate those annotations become
@@ -98,7 +121,7 @@ Each check returns `Result<Check>`. `Ok(Check::up())` and `Ok(Check::down())`
 become normal check responses. `Err(_)` is converted into a named `DOWN` check
 with an `error` data value.
 
-## Wire Format
+## Wire format
 
 Successful aggregate health returns HTTP 200:
 

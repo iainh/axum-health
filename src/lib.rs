@@ -1,9 +1,19 @@
-//! MicroProfile-inspired health endpoints for Axum.
+//! MicroProfile-inspired health endpoints for [`axum`].
 //!
-//! `axum-health` keeps the useful parts of MicroProfile Health: named checks,
-//! `UP`/`DOWN` status values, `/health`, `/health/live`, `/health/ready`, and
-//! `/health/started` endpoints. It adapts the API to Rust by registering async
-//! closures with a [`Health`] registry instead of using Java annotations.
+//! `axum-health` provides Kubernetes-friendly health endpoints using the
+//! protocol shape from Eclipse MicroProfile Health. It keeps the wire format
+//! small and predictable: named checks, `UP`/`DOWN` status values, JSON
+//! responses, and HTTP 200 or 503 status codes.
+//!
+//! ## High-level features
+//!
+//! - Register liveness, readiness and startup checks with async closures.
+//! - Expose `/health`, `/health/live`, `/health/ready`, and `/health/started`.
+//! - Compose backend-specific health providers with [`HealthBuilder::include`].
+//! - Add per-check diagnostic data to JSON responses.
+//! - Convert check errors into named `DOWN` responses.
+//!
+//! ## Example
 //!
 //! ```
 //! use axum::Router;
@@ -18,6 +28,19 @@
 //!
 //! let app: Router = Router::new().merge(health.router());
 //! ```
+//!
+//! ## Endpoint behaviour
+//!
+//! [`Health::router`] returns an [`axum::Router`] with four `GET` routes:
+//!
+//! - `/health` runs all registered checks.
+//! - `/health/live` runs liveness checks.
+//! - `/health/ready` runs readiness checks.
+//! - `/health/started` runs startup checks.
+//!
+//! The aggregate status is `UP` only when every selected check is `UP`. A
+//! healthy response uses HTTP 200. If any selected check is `DOWN`, the
+//! endpoint returns HTTP 503.
 //!
 //! # Composing backend health checks
 //!
@@ -39,6 +62,18 @@
 //!
 //! let health = Health::builder().include(DatabaseHealth).build();
 //! ```
+//!
+//! ## MicroProfile mapping
+//!
+//! MicroProfile Health uses Java `HealthCheck` implementations annotated with
+//! `@Liveness`, `@Readiness`, and `@Startup`. This crate maps those concepts to
+//! Rust builder methods and optional method attributes:
+//!
+//! - `@Liveness` maps to [`HealthBuilder::liveness`] or `#[liveness]`.
+//! - `@Readiness` maps to [`HealthBuilder::readiness`] or `#[readiness]`.
+//! - `@Startup` maps to [`HealthBuilder::startup`] or `#[startup]`.
+//! - A check annotated for multiple kinds maps to [`HealthBuilder::check_for`]
+//!   or `#[health(...)]`.
 
 pub use axum_health_macros::health_check;
 
@@ -56,6 +91,10 @@ use std::sync::Arc;
 use std::task::Poll;
 
 /// Error type returned by health check closures.
+///
+/// Returning an error does not fail request processing. The health endpoint
+/// reports that check as `DOWN` and includes the error message in the check's
+/// `data.error` field.
 pub type Error = Box<dyn StdError + Send + Sync>;
 
 /// Result type returned by health check closures.
@@ -64,7 +103,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 type CheckFuture = Pin<Box<dyn Future<Output = Result<Check>> + Send>>;
 type CheckFn = Arc<dyn Fn() -> CheckFuture + Send + Sync>;
 
-/// MicroProfile health status value.
+/// Health status for an aggregate response or a single check.
+///
+/// `Status` serializes as the MicroProfile Health wire values `"UP"` and
+/// `"DOWN"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Status {
@@ -84,6 +126,17 @@ impl Status {
 }
 
 /// A single health check result.
+///
+/// A check contains only its status and optional diagnostic data. The check name
+/// is provided when registering the check with [`HealthBuilder`].
+///
+/// ```
+/// use axum_health::Check;
+///
+/// let check = Check::up()
+///     .with_data("pool", "available")
+///     .with_data("open_connections", 4);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Check {
     status: Status,
@@ -162,6 +215,9 @@ struct RegisteredCheck {
 }
 
 /// A cloneable registry of health checks.
+///
+/// Build a registry with [`Health::builder`], then merge its router into your
+/// application.
 #[derive(Clone, Default)]
 pub struct Health {
     checks: Arc<[RegisteredCheck]>,
@@ -173,8 +229,19 @@ impl Health {
         HealthBuilder::default()
     }
 
-    /// Returns an Axum router with `/health`, `/health/live`, `/health/ready`,
+    /// Returns an axum router with `/health`, `/health/live`, `/health/ready`,
     /// and `/health/started` routes.
+    ///
+    /// ```
+    /// use axum::Router;
+    /// use axum_health::{Check, Health};
+    ///
+    /// let health = Health::builder()
+    ///     .liveness("process", || async { Ok(Check::up()) })
+    ///     .build();
+    ///
+    /// let app: Router = Router::new().merge(health.router());
+    /// ```
     pub fn router(self) -> axum::Router {
         axum::Router::new()
             .route("/health", get(all))
@@ -207,6 +274,10 @@ impl Health {
 }
 
 /// Builder for [`Health`].
+///
+/// Register checks with the specific kind methods or use
+/// [`HealthBuilder::check_for`] when the same probe should serve multiple
+/// endpoints.
 #[derive(Default)]
 pub struct HealthBuilder {
     checks: Vec<RegisteredCheck>,
@@ -226,6 +297,9 @@ pub trait HealthCheck: Send + Sync + 'static {
 
 impl HealthBuilder {
     /// Includes a backend-specific health check provider.
+    ///
+    /// Use this for structs annotated with [`health_check`] or for manual
+    /// [`HealthCheck`] implementations.
     pub fn include<C>(self, check: C) -> Self
     where
         C: HealthCheck,
@@ -234,6 +308,9 @@ impl HealthBuilder {
     }
 
     /// Registers a liveness check.
+    ///
+    /// Liveness checks answer whether the process should keep running. A failed
+    /// liveness check usually tells an orchestrator to restart the process.
     pub fn liveness<F, Fut>(self, name: impl Into<String>, check: F) -> Self
     where
         F: Fn() -> Fut + Send + Sync + 'static,
@@ -243,6 +320,10 @@ impl HealthBuilder {
     }
 
     /// Registers a readiness check.
+    ///
+    /// Readiness checks answer whether the application can receive traffic. A
+    /// failed readiness check usually removes the instance from service without
+    /// restarting it.
     pub fn readiness<F, Fut>(self, name: impl Into<String>, check: F) -> Self
     where
         F: Fn() -> Fut + Send + Sync + 'static,
@@ -252,6 +333,10 @@ impl HealthBuilder {
     }
 
     /// Registers a startup check.
+    ///
+    /// Startup checks answer whether the application has completed its initial
+    /// boot work. A startup probe is useful when initialization can take longer
+    /// than the normal liveness budget.
     pub fn startup<F, Fut>(self, name: impl Into<String>, check: F) -> Self
     where
         F: Fn() -> Fut + Send + Sync + 'static,
@@ -261,6 +346,16 @@ impl HealthBuilder {
     }
 
     /// Registers the same check for more than one health kind.
+    ///
+    /// ```
+    /// use axum_health::{Check, Health, Kind};
+    ///
+    /// let health = Health::builder()
+    ///     .check_for([Kind::Liveness, Kind::Readiness], "ldap", || async {
+    ///         Ok(Check::up())
+    ///     })
+    ///     .build();
+    /// ```
     pub fn check_for<F, Fut>(
         mut self,
         kinds: impl IntoIterator<Item = Kind>,
