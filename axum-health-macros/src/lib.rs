@@ -42,6 +42,7 @@ fn expand_health_check(impl_item: &mut ItemImpl) -> TokenStream2 {
             continue;
         };
 
+        let had_check_attrs = method.attrs.iter().any(is_check_attr);
         match take_check_attrs(&mut method.attrs) {
             Ok(checks) if checks.is_empty() => {}
             Ok(checks) => {
@@ -66,7 +67,10 @@ fn expand_health_check(impl_item: &mut ItemImpl) -> TokenStream2 {
                     Err(error) => errors.push(error.to_compile_error()),
                 }
             }
-            Err(error) => errors.push(error.to_compile_error()),
+            Err(error) => {
+                has_annotated_check |= had_check_attrs;
+                errors.push(error.to_compile_error());
+            }
         }
     }
 
@@ -213,6 +217,13 @@ fn is_check_type(ty: &Type) -> bool {
         .segments
         .last()
         .is_some_and(|segment| segment.ident == "Check")
+}
+
+fn is_check_attr(attr: &Attribute) -> bool {
+    attr.path().is_ident("liveness")
+        || attr.path().is_ident("readiness")
+        || attr.path().is_ident("startup")
+        || attr.path().is_ident("health")
 }
 
 fn take_check_attrs(attrs: &mut Vec<Attribute>) -> syn::Result<Vec<CheckAttr>> {
