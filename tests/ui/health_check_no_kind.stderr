@@ -1,0 +1,5 @@
+error: expected attribute arguments in parentheses: #[health(...)]
+ --> tests/ui/health_check_no_kind.rs:7:7
+  |
+7 |     #[health]
+  |       ^^^^^^
