@@ -113,13 +113,23 @@ impl Check {
     /// Data values should be small and safe to expose to unauthenticated probe
     /// consumers. MicroProfile Health allows string, boolean, and number values;
     /// this method also accepts nested JSON because Rust callers often already
-    /// have structured diagnostics.
+    /// have structured diagnostics. If serialization failures should make the
+    /// health check fail, use [`Self::try_with_data`] instead.
     pub fn with_data(mut self, key: impl Into<String>, value: impl Serialize) -> Self {
         let value = serde_json::to_value(value).unwrap_or_else(|error| {
             Value::String(format!("failed to serialize health data: {error}"))
         });
         self.data.insert(key.into(), value);
         self
+    }
+
+    /// Tries to add a JSON-serializable data value to this check.
+    ///
+    /// This is the fallible variant of [`Self::with_data`] for checks that
+    /// should return an error if diagnostic data cannot be serialized.
+    pub fn try_with_data(mut self, key: impl Into<String>, value: impl Serialize) -> Result<Self> {
+        self.data.insert(key.into(), serde_json::to_value(value)?);
+        Ok(self)
     }
 }
 
@@ -351,6 +361,8 @@ mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
     use http::Request;
+    use serde::Serialize;
+    use serde::ser::{SerializeStruct, Serializer};
     use serde_json::json;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -488,6 +500,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn try_with_data_returns_serialization_errors() {
+        let error = Check::up()
+            .try_with_data("broken", FailingData)
+            .expect_err("failing serializer should return an error");
+
+        assert_eq!(error.to_string(), "health data failed to serialize");
+    }
+
     #[tokio::test]
     async fn selected_checks_run_concurrently() {
         let running = Arc::new(AtomicUsize::new(0));
@@ -537,6 +558,30 @@ mod tests {
                 running.fetch_sub(1, Ordering::SeqCst);
                 Ok(Check::up())
             })
+        }
+    }
+
+    struct FailingData;
+
+    impl Serialize for FailingData {
+        fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let mut data = serializer.serialize_struct("FailingData", 1)?;
+            data.serialize_field("broken", &BrokenField("health data failed to serialize"))?;
+            data.end()
+        }
+    }
+
+    struct BrokenField(&'static str);
+
+    impl Serialize for BrokenField {
+        fn serialize<S>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            Err(serde::ser::Error::custom(self.0))
         }
     }
 
