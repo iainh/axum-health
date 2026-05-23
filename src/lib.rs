@@ -18,6 +18,29 @@
 //!
 //! let app: Router = Router::new().merge(health.router());
 //! ```
+//!
+//! # Composing backend health checks
+//!
+//! Use [`health_check`] when checks naturally live on a struct that owns
+//! backend clients such as REST clients, database pools, or LDAP connections.
+//!
+//! ```
+//! use axum_health::{Check, Health, Result, health_check};
+//!
+//! struct DatabaseHealth;
+//!
+//! #[health_check]
+//! impl DatabaseHealth {
+//!     #[readiness(name = "database")]
+//!     async fn ready(&self) -> Result<Check> {
+//!         Ok(Check::up())
+//!     }
+//! }
+//!
+//! let health = Health::builder().include(DatabaseHealth).build();
+//! ```
+
+pub use axum_health_macros::health_check;
 
 use axum::Json;
 use axum::extract::State;
@@ -181,7 +204,27 @@ pub struct HealthBuilder {
     checks: Vec<RegisteredCheck>,
 }
 
+/// A provider that can register one or more health check procedures.
+///
+/// This is implemented by the [`health_check`] macro for backend-specific
+/// types. A single provider can contribute liveness, readiness, startup, or
+/// multiple kinds of checks.
+pub trait HealthCheck: Send + Sync + 'static {
+    /// Registers this provider's checks with the supplied builder.
+    fn register(self, builder: HealthBuilder) -> HealthBuilder
+    where
+        Self: Sized;
+}
+
 impl HealthBuilder {
+    /// Includes a backend-specific health check provider.
+    pub fn include<C>(self, check: C) -> Self
+    where
+        C: HealthCheck,
+    {
+        check.register(self)
+    }
+
     /// Registers a liveness check.
     pub fn liveness<F, Fut>(self, name: impl Into<String>, check: F) -> Self
     where

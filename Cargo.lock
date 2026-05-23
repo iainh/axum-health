@@ -65,11 +65,21 @@ name = "axum-health"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "axum-health-macros",
  "http",
  "serde",
  "serde_json",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "axum-health-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

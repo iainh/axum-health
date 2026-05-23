@@ -28,16 +28,71 @@ let health = Health::builder()
 let app: Router = Router::new().merge(health.router());
 ```
 
+When checks naturally belong to backend-specific types, use `#[health_check]`
+on each inherent `impl` block and compose them with `include`:
+
+```rust
+use axum_health::{Check, Health, Result, health_check};
+
+struct RestHealth {
+    client: RestClient,
+}
+
+#[health_check]
+impl RestHealth {
+    #[liveness(name = "rest-api")]
+    async fn live(&self) -> Result<Check> {
+        self.client.ping().await?;
+        Ok(Check::up())
+    }
+}
+
+struct DatabaseHealth {
+    pool: DatabasePool,
+}
+
+#[health_check]
+impl DatabaseHealth {
+    #[readiness(name = "database")]
+    async fn ready(&self) -> Result<Check> {
+        self.pool.acquire().await?;
+        Ok(Check::up())
+    }
+}
+
+struct LdapHealth {
+    client: LdapClient,
+}
+
+#[health_check]
+impl LdapHealth {
+    #[health(liveness, readiness, name = "ldap-directory")]
+    async fn bind_probe(&self) -> Result<Check> {
+        self.client.bind_probe().await?;
+        Ok(Check::up())
+    }
+}
+
+let health = Health::builder()
+    .include(RestHealth { client: rest })
+    .include(DatabaseHealth { pool: database })
+    .include(LdapHealth { client: ldap })
+    .build();
+```
+
 ## Design
 
 MicroProfile Health describes Java `HealthCheck` implementations annotated with
 `@Liveness`, `@Readiness`, or `@Startup`. In this crate those annotations become
-registration methods:
+registration methods, with an optional macro layer for colocating checks on
+stateful backend-owning types:
 
 - `Health::builder().liveness("name", check)`
 - `Health::builder().readiness("name", check)`
 - `Health::builder().startup("name", check)`
 - `Health::builder().check_for([Kind::Liveness, Kind::Readiness], "name", check)`
+- `Health::builder().include(DatabaseHealth { pool }).build()`
+- `#[health_check] impl DatabaseHealth { ... }`
 
 Each check returns `Result<Check>`. `Ok(Check::up())` and `Ok(Check::down())`
 become normal check responses. `Err(_)` is converted into a named `DOWN` check
