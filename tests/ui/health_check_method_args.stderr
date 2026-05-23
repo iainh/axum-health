@@ -1,0 +1,5 @@
+error: health check methods must not take arguments other than &self
+ --> tests/ui/health_check_method_args.rs:8:27
+  |
+8 |     async fn ready(&self, timeout_ms: u64) -> Result<Check> {
+  |                           ^^^^^^^^^^^^^^^
