@@ -36,6 +36,12 @@ let health = Health::builder()
 let app: Router = Router::new().merge(health.router());
 ```
 
+Use `router_at` when an application needs a different mount path:
+
+```rust
+let app: Router = Router::new().merge(health.router_at("/internal/health"));
+```
+
 ## Composing backend health checks
 
 When checks naturally belong to backend-specific types, use `#[health_check]`
@@ -98,6 +104,9 @@ let health = Health::builder()
 - `/health/live` runs liveness checks.
 - `/health/ready` runs readiness checks.
 - `/health/started` runs startup checks.
+
+`Health::router_at("/internal/health")` exposes the same endpoint layout under
+the supplied mount path.
 
 The aggregate status is `UP` only when every selected check is `UP`. A healthy
 response uses HTTP 200. If any selected check is `DOWN`, the endpoint returns

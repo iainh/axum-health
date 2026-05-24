@@ -243,10 +243,32 @@ impl Health {
     /// let app: Router = Router::new().merge(health.router());
     /// ```
     pub fn router(self) -> axum::Router {
+        self.router_at("/health")
+    }
+
+    /// Returns an axum router mounted at a custom health path.
+    ///
+    /// The aggregate endpoint is mounted at `path`, and the kind-specific
+    /// endpoints are mounted below it. For example, `router_at("/internal/health")`
+    /// exposes `/internal/health`, `/internal/health/live`,
+    /// `/internal/health/ready`, and `/internal/health/started`.
+    ///
+    /// ```
+    /// use axum::Router;
+    /// use axum_health::{Check, Health};
+    ///
+    /// let health = Health::builder()
+    ///     .liveness("process", || async { Ok(Check::up()) })
+    ///     .build();
+    ///
+    /// let app: Router = Router::new().merge(health.router_at("/internal/health"));
+    /// ```
+    pub fn router_at(self, path: impl Into<String>) -> axum::Router {
+        let path = validate_mount_path(path);
         axum::Router::new()
-            .route("/health", get(all))
+            .route(&path, get(all))
             .nest(
-                "/health",
+                &path,
                 axum::Router::new()
                     .route(Kind::Liveness.path(), get(liveness))
                     .route(Kind::Readiness.path(), get(readiness))
@@ -406,6 +428,20 @@ fn validate_name(name: impl Into<String>) -> Arc<str> {
     Arc::from(name)
 }
 
+fn validate_mount_path(path: impl Into<String>) -> String {
+    let path = path.into();
+    assert!(
+        path.starts_with('/'),
+        "health mount path must start with `/`"
+    );
+    assert!(path != "/", "health mount path must not be `/`");
+    assert!(
+        !path.ends_with('/'),
+        "health mount path must not end with `/`"
+    );
+    path
+}
+
 struct PendingCheck {
     name: Arc<str>,
     future: Option<CheckFuture>,
@@ -538,6 +574,40 @@ mod tests {
                 "checks": []
             })
         );
+    }
+
+    #[tokio::test]
+    async fn health_router_can_use_custom_mount_path() {
+        let response = Health::builder()
+            .readiness("database", || async { Ok(Check::up()) })
+            .build()
+            .router_at("/internal/health")
+            .oneshot(request("/internal/health/ready"))
+            .await
+            .expect("health route should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(response).await,
+            json!({
+                "status": "UP",
+                "checks": [
+                    {"name": "database", "status": "UP"}
+                ]
+            })
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "health mount path must start with `/`")]
+    fn router_at_rejects_relative_mount_paths() {
+        let _router = Health::builder().build().router_at("health");
+    }
+
+    #[test]
+    #[should_panic(expected = "health mount path must not end with `/`")]
+    fn router_at_rejects_trailing_slash_mount_paths() {
+        let _router = Health::builder().build().router_at("/health/");
     }
 
     #[tokio::test]
