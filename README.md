@@ -42,6 +42,8 @@ Use `router_at` when an application needs a different mount path:
 let app: Router = Router::new().merge(health.router_at("/internal/health"));
 ```
 
+For a step-by-step walkthrough, see the [Axum Health guide](docs/health-guide.md).
+
 ## Composing backend health checks
 
 When checks naturally belong to backend-specific types, use `#[health_check]`
